@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Organizador de Parafusos — Triagem Automática</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap');
+
+  :root{
+    --bg: #131315;
+    --panel: #1a1a1d;
+    --box-face: #2b2b2f;
+    --box-face-dark: #212124;
+    --box-top: #37383c;
+    --hole: #0b0b0c;
+    --bin-wall: #3c3d42;
+    --bin-floor: #17181a;
+    --ink: #cfd0d3;
+    --ink-dim: #8b8c90;
+    --metal-hi: #eceeef;
+    --metal-lo: #7d7f83;
+    --metal-edge: #4a4b4f;
+    --amber: #e3993b;
+    --amber-dim: rgba(227,153,59,0.35);
+  }
+
+  *{ box-sizing: border-box; }
+
+  body{
+    margin:0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: 'Inter', sans-serif;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    padding: 36px 16px 48px;
+    min-height:100vh;
+  }
+
+  .eyebrow{
+    font-family:'IBM Plex Mono', monospace;
+    font-size:12px;
+    letter-spacing:0.14em;
+    text-transform:uppercase;
+    color: var(--amber);
+    margin: 0 0 6px;
+  }
+
+  h1{
+    font-family:'IBM Plex Mono', monospace;
+    font-weight:500;
+    font-size: 21px;
+    margin: 0 0 6px;
+    color: var(--ink);
+    letter-spacing: 0.01em;
+  }
+
+  .sub{
+    font-size:14px;
+    color: var(--ink-dim);
+    margin: 0 0 28px;
+    max-width: 560px;
+    text-align:center;
+    line-height:1.5;
+  }
+
+  .stage{
+    background: var(--panel);
+    border-radius: 14px;
+    padding: 20px;
+    box-shadow: 0 1px 0 rgba(255,255,255,0.03) inset;
+  }
+
+  canvas{
+    display:block;
+    border-radius: 8px;
+    cursor: pointer;
+    max-width: 100%;
+    height:auto;
+  }
+
+  .controls{
+    display:flex;
+    gap:10px;
+    margin-top: 20px;
+    flex-wrap: wrap;
+    justify-content:center;
+  }
+
+  button{
+    font-family:'IBM Plex Mono', monospace;
+    font-size:12.5px;
+    letter-spacing:0.03em;
+    background: transparent;
+    border: 1px solid var(--bin-wall);
+    color: var(--ink);
+    padding: 10px 16px;
+    border-radius: 6px;
+    cursor:pointer;
+    transition: border-color .15s ease, color .15s ease;
+  }
+
+  button:hover{ border-color: var(--amber); color: var(--amber); }
+  button:active{ transform: translateY(1px); }
+
+  button.primary{
+    border-color: var(--amber);
+    color: var(--amber);
+  }
+
+  .hint{
+    margin-top:14px;
+    font-size:12px;
+    color: var(--ink-dim);
+    text-align:center;
+  }
+
+  .hint kbd{
+    font-family:'IBM Plex Mono', monospace;
+    background: var(--box-face);
+    padding: 1px 6px;
+    border-radius:4px;
+    color: var(--ink);
+  }
+</style>
+</head>
+<body>
+
+  <p class="eyebrow">Simulação</p>
+  <h1>Organizador de parafusos</h1>
+  <p class="sub">Cada parafuso rola pela bandeja até encontrar o furo do próprio tamanho e cai na gaveta correta. Clique em um furo para soltar um parafuso ali, ou use os controles abaixo.</p>
+
+  <div class="stage">
+    <canvas id="c" width="880" height="500"></canvas>
+  </div>
+
+  <div class="controls">
+    <button class="primary" id="btnRandom">Soltar parafuso</button>
+    <button id="btnAll">Soltar todos os tamanhos</button>
+    <button id="btnClear">Esvaziar caixa</button>
+  </div>
+
+  <p class="hint">Clique diretamente em um furo rotulado (<kbd>20mm</kbd> … <kbd>nuts</kbd>) para escolher o tamanho.</p>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+const slotDefs = [
+  { label:'nuts', kind:'nut',  len:0,  holeW:26 },
+  { label:'6mm',  kind:'bolt', len:22, holeW:20 },
+  { label:'8mm',  kind:'bolt', len:30, holeW:24 },
+  { label:'10mm', kind:'bolt', len:36, holeW:28 },
+  { label:'12mm', kind:'bolt', len:42, holeW:32 },
+  { label:'16mm', kind:'bolt', len:54, holeW:38 },
+  { label:'18mm', kind:'bolt', len:62, holeW:42 },
+  { label:'20mm', kind:'bolt', len:70, holeW:46 },
+];
+
+const marginX = 40;
+const boxLeft = marginX, boxRight = W - marginX;
+const boxWidth = boxRight - boxLeft;
+const colGap = 4;
+const colW = (boxWidth - colGap*(slotDefs.length-1)) / slotDefs.length;
+
+const topPlateY0 = 60, topPlateY1 = 148;
+const binTopY = 152, floorY = 452;
+
+const slots = slotDefs.map((s,i)=>{
+  const x0 = boxLeft + i*(colW+colGap);
+  return { ...s, i, x0, x1: x0+colW, cx: x0+colW/2 };
+});
+
+let pileHeight = new Array(slots.length).fill(0);
+let staticPiles = slots.map(()=>[]);
+let active = [];
+let particles = [];
+
+function roundRect(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);
+  ctx.arcTo(x,y,x+w,y,r);
+  ctx.closePath();
+}
+
+function drawBoxStatic(){
+  ctx.clearRect(0,0,W,H);
+
+  roundRect(boxLeft-10, topPlateY0-16, boxWidth+20, floorY-topPlateY0+30, 10);
+  ctx.fillStyle = '#000';
+  ctx.globalAlpha = 0.25;
+  ctx.fill();
+  ctx.globalAlpha = 1;
+
+  const g = ctx.createLinearGradient(0, topPlateY0, 0, floorY);
+  g.addColorStop(0, '#333438');
+  g.addColorStop(1, '#242427');
+  roundRect(boxLeft-8, topPlateY0-14, boxWidth+16, floorY-topPlateY0+28, 10);
+  ctx.fillStyle = g;
+  ctx.fill();
+
+  roundRect(boxLeft, topPlateY0-8, boxWidth, topPlateY1-topPlateY0+8, 6);
+  ctx.fillStyle = '#3a3b3f';
+  ctx.fill();
+
+  slots.forEach(s=>{
+    const hw = s.holeW;
+    ctx.fillStyle = '#0a0a0b';
+    if(s.kind==='bolt'){
+      roundRect(s.cx-hw/2, topPlateY0+4, hw, topPlateY1-topPlateY0-8, 3);
+      ctx.fill();
+    } else {
+      drawHex(s.cx, (topPlateY0+topPlateY1)/2, hw/2+2, '#0a0a0b');
+    }
+
+    ctx.save();
+    ctx.font = "500 12px 'IBM Plex Mono', monospace";
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillText(s.label, s.cx+0.6, topPlateY0-13.4);
+    ctx.fillStyle = '#b9bbc0';
+    ctx.fillText(s.label, s.cx, topPlateY0-14);
+    ctx.restore();
+  });
+
+  for(let i=1;i<slots.length;i++){
+    const x = slots[i].x0 - colGap/2;
+    ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+    ctx.lineWidth = colGap;
+    ctx.beginPath();
+    ctx.moveTo(x, binTopY);
+    ctx.lineTo(x, floorY);
+    ctx.stroke();
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x-colGap/2+1, binTopY);
+    ctx.lineTo(x-colGap/2+1, floorY);
+    ctx.stroke();
+  }
+
+  const fg = ctx.createLinearGradient(0, binTopY, 0, floorY);
+  fg.addColorStop(0, 'rgba(0,0,0,0)');
+  fg.addColorStop(1, 'rgba(0,0,0,0.3)');
+  ctx.fillStyle = fg;
+  ctx.fillRect(boxLeft, binTopY, boxWidth, floorY-binTopY);
+
+  roundRect(boxLeft-8, topPlateY0-14, boxWidth+16, floorY-topPlateY0+28, 10);
+  ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+}
+
+function drawHex(cx,cy,r,fill){
+  ctx.beginPath();
+  for(let k=0;k<6;k++){
+    const a = Math.PI/6 + k*Math.PI/3;
+    const px = cx + r*Math.cos(a), py = cy + r*Math.sin(a);
+    k===0 ? ctx.moveTo(px,py) : ctx.lineTo(px,py);
+  }
+  ctx.closePath();
+  ctx.fillStyle = fill;
+  ctx.fill();
+}
+
+function drawBolt(x,y,rot,len){
+  ctx.save();
+  ctx.translate(x,y);
+  ctx.rotate(rot);
+  const headR = len*0.19, shaftLen = len*0.78, shaftW = len*0.155;
+
+  const grad = ctx.createLinearGradient(0,-shaftW/2,0,shaftW/2);
+  grad.addColorStop(0, '#eceeef');
+  grad.addColorStop(0.5, '#a7a9ad');
+  grad.addColorStop(1, '#6b6d71');
+
+  ctx.fillStyle = grad;
+  roundRect(-shaftLen/2, -shaftW/2, shaftLen, shaftW, shaftW/2);
+  ctx.fill();
+  ctx.strokeStyle = '#3f4044';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  ctx.strokeStyle = 'rgba(0,0,0,0.28)';
+  ctx.lineWidth = 1;
+  const threads = Math.max(3, Math.floor(shaftLen/6));
+  for(let t=0;t<threads;t++){
+    const tx = -shaftLen/2 + 3 + t*(shaftLen/threads);
+    ctx.beginPath();
+    ctx.moveTo(tx, -shaftW/2+1);
+    ctx.lineTo(tx+2.5, shaftW/2-1);
+    ctx.stroke();
+  }
+
+  drawHex(-shaftLen/2 - headR*0.55, 0, headR, '#d8dade');
+  ctx.strokeStyle = '#4a4b4f';
+  ctx.lineWidth = 1;
+  drawHex(-shaftLen/2 - headR*0.55, 0, headR, '#d8dade');
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawNut(x,y,rot){
+  ctx.save();
+  ctx.translate(x,y);
+  ctx.rotate(rot);
+  drawHex(0,0,13,'#d0d2d6');
+  ctx.strokeStyle = '#4a4b4f';
+  ctx.lineWidth = 1;
+  drawHex(0,0,13,'#d0d2d6');
+  ctx.stroke();
+  ctx.fillStyle = '#101112';
+  ctx.beginPath();
+  ctx.arc(0,0,6,0,Math.PI*2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawPart(slot, x, y, rot){
+  if(slot.kind==='bolt') drawBolt(x,y,rot,slot.len);
+  else drawNut(x,y,rot);
+}
+
+function thicknessOf(slot){
+  return slot.kind==='bolt' ? slot.len*0.19*2 : 22;
+}
+
+function spawn(slotIndex, startX){
+  const s = slots[slotIndex];
+  active.push({
+    slot: s,
+    x: startX,
+    y: topPlateY0 - 30,
+    rot: 0,
+    vy: 0,
+    phase: 'roll',
+    bounced: false,
+  });
+}
+
+function dropRandom(){
+  const i = Math.floor(Math.random()*slots.length);
+  spawn(i, boxLeft - 40);
+}
+
+function dropAll(){
+  slots.forEach((s,idx)=>{
+    setTimeout(()=>spawn(idx, boxLeft-40), idx*380);
+  });
+}
+
+function clearBox(){
+  active = [];
+  particles = [];
+  pileHeight = new Array(slots.length).fill(0);
+  staticPiles = slots.map(()=>[]);
+}
+
+canvas.addEventListener('click', (e)=>{
+  const rect = canvas.getBoundingClientRect();
+  const scale = W / rect.width;
+  const mx = (e.clientX - rect.left) * scale;
+  const my = (e.clientY - rect.top) * scale;
+  if(my < topPlateY0-20 || my > topPlateY1+10) { dropRandom(); return; }
+  const idx = slots.findIndex(s=> mx>=s.x0 && mx<=s.x1);
+  if(idx>=0){
+    const startX = Math.max(boxLeft-40, slots[idx].cx - 130);
+    spawn(idx, startX);
+  }
+});
+
+document.getElementById('btnRandom').onclick = dropRandom;
+document.getElementById('btnAll').onclick = dropAll;
+document.getElementById('btnClear').onclick = clearBox;
+
+function spawnParticles(x,y){
+  for(let k=0;k<8;k++){
+    const a = Math.random()*Math.PI*2;
+    const sp = 1+Math.random()*2.2;
+    particles.push({x,y, vx:Math.cos(a)*sp, vy:Math.sin(a)*sp-1, life:18+Math.random()*10});
+  }
+}
+
+const ROLL_SPEED = 5.4;
+const GRAVITY = 0.62;
+
+function update(){
+  active.forEach(p=>{
+    if(p.phase==='roll'){
+      const target = p.slot.cx;
+      const radius = p.slot.kind==='bolt' ? p.slot.len*0.155/2 : 13;
+      if(p.x < target - 2){
+        p.x = Math.min(target, p.x + ROLL_SPEED);
+        p.rot += ROLL_SPEED / Math.max(6,radius*2);
+      } else {
+        p.x = target;
+        p.phase = 'fall';
+      }
+      p.y = topPlateY0 - 30 + Math.sin(p.x*0.15)*2.5;
+    } else if(p.phase==='fall'){
+      p.vy += GRAVITY;
+      p.y += p.vy;
+      p.rot += 0.12;
+      const idx = p.slot.i;
+      const thick = thicknessOf(p.slot);
+      const landY = floorY - pileHeight[idx] - thick*0.5;
+      if(p.y >= landY){
+        p.y = landY;
+        if(!p.bounced && p.vy > 3){
+          p.vy = -p.vy*0.28;
+          p.bounced = true;
+        } else {
+          p.phase = 'done';
+        }
+      }
+    }
+  });
+
+  const stillActive = [];
+  active.forEach(p=>{
+    if(p.phase==='done'){
+      const idx = p.slot.i;
+      const thick = thicknessOf(p.slot);
+      const jitter = (Math.random()-0.5)*colW*0.32;
+      staticPiles[idx].push({ x: p.slot.cx + jitter, y: p.y, rot: (Math.random()-0.5)*0.9, slot: p.slot });
+      pileHeight[idx] = Math.min(floorY-binTopY-20, pileHeight[idx] + thick*0.62 + Math.random()*2);
+      spawnParticles(p.x, p.y);
+    } else {
+      stillActive.push(p);
+    }
+  });
+  active = stillActive;
+
+  particles.forEach(pt=>{
+    pt.x += pt.vx; pt.y += pt.vy; pt.vy += 0.08; pt.life--;
+  });
+  particles = particles.filter(pt=>pt.life>0);
+}
+
+function render(){
+  drawBoxStatic();
+
+  staticPiles.forEach(pile=>{
+    pile.forEach(item=> drawPart(item.slot, item.x, item.y, item.rot));
+  });
+
+  active.forEach(p=> drawPart(p.slot, p.x, p.y, p.rot));
+
+  particles.forEach(pt=>{
+    ctx.globalAlpha = Math.max(0, pt.life/26);
+    ctx.fillStyle = '#e3993b';
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, 1.6, 0, Math.PI*2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  });
+}
+
+function loop(){
+  update();
+  render();
+  requestAnimationFrame(loop);
+}
+
+drawBoxStatic();
+loop();
+
+setTimeout(dropAll, 500);
+</script>
+</body>
+</html>
